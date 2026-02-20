@@ -1,64 +1,17 @@
 import streamlit as st
 import pandas as pd
 import folium
-from folium.plugins import MarkerCluster
+from folium.plugins import MarkerCluster, HeatMap
 from streamlit_folium import st_folium
+from io import BytesIO
 
 # ----------------------------
-# CONFIG MOBILE & LAYOUT
+# CONFIG MOBILE & APP
 # ----------------------------
 st.set_page_config(
     page_title="Carte Porte-à-Porte",
     layout="wide"
 )
-
-# ----------------------------
-# CSS personnalisé
-# ----------------------------
-st.markdown("""
-<style>
-/* Fond général */
-body {
-    background-color: #f9f9f9;
-}
-
-/* Titres centrés et couleur */
-h1, h2, h3 {
-    color: #1f77b4;
-    font-family: 'Arial', sans-serif;
-    text-align: center;
-}
-
-/* Centrer les éléments Streamlit */
-[data-testid="stAppViewContainer"] {
-    display: flex;
-    flex-direction: column;
-    align-items: center;
-}
-
-/* Style boutons */
-.stButton>button {
-    background-color: #1f77b4;
-    color: white;
-    border-radius: 10px;
-    padding: 0.5em 1em;
-    font-size: 16px;
-    cursor: pointer;
-}
-
-/* Champs selectbox et multiselect responsive */
-.css-1aumxhk, .css-1v0mbdj {
-    min-width: 200px;
-    width: 100%;
-}
-
-/* Carte responsive */
-.leaflet-container {
-    width: 100% !important;
-    height: 600px !important;
-}
-</style>
-""", unsafe_allow_html=True)
 
 st.title("📍 Carte Familles — Chiconi")
 
@@ -69,73 +22,103 @@ st.title("📍 Carte Familles — Chiconi")
 def load_data():
     df = pd.read_excel("resultats_rues_mayotte.xlsx")
 
+    # Colonnes nécessaires
     for col, default in [("Visite", "À visiter"), ("Prioritaire", False), ("Nombre_membres", 1)]:
         if col not in df.columns:
             df[col] = default
 
-    df["Nom_rue"] = df["Nom_rue"].fillna("Inconnu").astype(str).str.strip()
+    # Nettoyage Nom_rue
+    df["Nom_rue"] = df.get("Nom_rue", "Inconnu").fillna("Inconnu").astype(str).str.strip()
+
+    # Nettoyage coordonnées
     df["lat"] = pd.to_numeric(df["lat"], errors="coerce")
     df["lon"] = pd.to_numeric(df["lon"], errors="coerce")
     df = df.dropna(subset=["lat", "lon"])
+
     return df
 
 df = load_data()
 
 # ----------------------------
-# 2️⃣ Menu filtres
+# 2️⃣ Sidebar filtres
 # ----------------------------
-quartiers = ["Tous"] + sorted(df["Nom_rue"].unique(), key=str.lower)
-quartier_select = st.selectbox("🏘️ Quartier", quartiers)
+with st.sidebar:
+    st.header("Filtres 🛠️")
 
-etat_select = st.multiselect(
-    "État visite",
-    ["À visiter", "Visité", "En cours"],
-    default=["À visiter", "Visité", "En cours"]
-)
+    quartiers = ["Tous"] + sorted(df["Nom_rue"].unique(), key=str.lower)
+    quartier_select = st.multiselect("🏘️ Quartiers", quartiers, default=["Tous"])
 
-prioritaire_only = st.checkbox("Afficher uniquement prioritaires")
+    etat_select = st.multiselect(
+        "État visite",
+        ["À visiter", "Visité", "En cours"],
+        default=["À visiter", "Visité", "En cours"]
+    )
+
+    prioritaire_only = st.checkbox("Afficher uniquement prioritaires")
+
+    membres_min, membres_max = int(df["Nombre_membres"].min()), int(df["Nombre_membres"].max())
+    nb_membres_range = st.slider("Nombre de membres", membres_min, membres_max, (membres_min, membres_max))
 
 # ----------------------------
 # 3️⃣ Filtrer DataFrame
 # ----------------------------
 df_plot = df.copy()
-if quartier_select != "Tous":
-    df_plot = df_plot[df_plot["Nom_rue"] == quartier_select]
+
+if "Tous" not in quartier_select:
+    df_plot = df_plot[df_plot["Nom_rue"].isin(quartier_select)]
 
 df_plot = df_plot[df_plot["Visite"].isin(etat_select)]
+
 if prioritaire_only:
     df_plot = df_plot[df_plot["Prioritaire"]]
+
+df_plot = df_plot[(df_plot["Nombre_membres"] >= nb_membres_range[0]) & 
+                  (df_plot["Nombre_membres"] <= nb_membres_range[1])]
 
 # ----------------------------
 # 4️⃣ Statistiques terrain
 # ----------------------------
-col1, col2, col3 = st.columns([1,1,1])
+st.subheader("📊 Statistiques")
+
+col1, col2, col3, col4 = st.columns(4)
 total = len(df_plot)
 visites = (df_plot["Visite"] == "Visité").sum()
 reste = (df_plot["Visite"] == "À visiter").sum()
+prioritaires = df_plot["Prioritaire"].sum()
 
 col1.metric("Familles visibles", total)
 col2.metric("Déjà visitées", visites)
 col3.metric("Restantes", reste)
+col4.metric("Prioritaires", prioritaires)
 
 # ----------------------------
-# 5️⃣ Créer carte
+# 5️⃣ Carte interactive
 # ----------------------------
+st.subheader("🗺️ Carte interactive")
 if not df_plot.empty:
-    lat_mean, lon_mean = df_plot["lat"].mean(), df_plot["lon"].mean()
+    lat_mean = df_plot["lat"].mean()
+    lon_mean = df_plot["lon"].mean()
 
     m = folium.Map(location=[lat_mean, lon_mean], zoom_start=15, control_scale=True)
+
     cluster = MarkerCluster().add_to(m)
 
-    colors = {"À visiter": "red", "Visité": "green", "En cours": "orange"}
+    colors = {
+        "À visiter": "red",
+        "Visité": "green",
+        "En cours": "orange"
+    }
 
-    for idx, row in df_plot.iterrows():
+    for _, row in df_plot.iterrows():
+        priority_badge = "⭐" if row["Prioritaire"] else ""
         popup_html = f"""
-        <b>{row['Nom']} {row['Prénoms']}</b><br>
+        <div style="font-family:sans-serif">
+        <b>{row['Nom']} {row['Prénoms']} {priority_badge}</b><br>
         Adresse : {row['Adresse']}<br>
         Famille ID : {row.get('Famille_ID','')}<br>
         État : {row['Visite']}<br>
         Membres : {row['Nombre_membres']}<br>
+        </div>
         """
         folium.CircleMarker(
             location=[row["lat"], row["lon"]],
@@ -147,6 +130,26 @@ if not df_plot.empty:
             popup=folium.Popup(popup_html, max_width=300)
         ).add_to(cluster)
 
-    st_folium(m, width="100%", height=600)
+    # Heatmap optionnelle (commenter si pas souhaité)
+    if st.checkbox("Afficher heatmap densité"):
+        heat_data = df_plot[["lat", "lon"]].values.tolist()
+        HeatMap(heat_data, radius=15).add_to(m)
+
+    st_folium(m, width=None, height=600)
 else:
     st.warning("Aucune donnée à afficher avec ces filtres.")
+
+# ----------------------------
+# 6️⃣ Export CSV
+# ----------------------------
+st.subheader("💾 Exporter les données filtrées")
+def convert_df_to_csv(df):
+    return df.to_csv(index=False).encode('utf-8')
+
+csv = convert_df_to_csv(df_plot)
+st.download_button(
+    label="Télécharger CSV",
+    data=csv,
+    file_name='familles_filtrees.csv',
+    mime='text/csv'
+)
