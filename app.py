@@ -5,12 +5,60 @@ from folium.plugins import MarkerCluster
 from streamlit_folium import st_folium
 
 # ----------------------------
-# CONFIG MOBILE
+# CONFIG MOBILE & LAYOUT
 # ----------------------------
 st.set_page_config(
     page_title="Carte Porte-à-Porte",
     layout="wide"
 )
+
+# ----------------------------
+# CSS personnalisé
+# ----------------------------
+st.markdown("""
+<style>
+/* Fond général */
+body {
+    background-color: #f9f9f9;
+}
+
+/* Titres centrés et couleur */
+h1, h2, h3 {
+    color: #1f77b4;
+    font-family: 'Arial', sans-serif;
+    text-align: center;
+}
+
+/* Centrer les éléments Streamlit */
+[data-testid="stAppViewContainer"] {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+}
+
+/* Style boutons */
+.stButton>button {
+    background-color: #1f77b4;
+    color: white;
+    border-radius: 10px;
+    padding: 0.5em 1em;
+    font-size: 16px;
+    cursor: pointer;
+}
+
+/* Champs selectbox et multiselect responsive */
+.css-1aumxhk, .css-1v0mbdj {
+    min-width: 200px;
+    width: 100%;
+}
+
+/* Carte responsive */
+.leaflet-container {
+    width: 100% !important;
+    height: 600px !important;
+}
+</style>
+""", unsafe_allow_html=True)
 
 st.title("📍 Carte Familles — Chiconi")
 
@@ -21,35 +69,20 @@ st.title("📍 Carte Familles — Chiconi")
 def load_data():
     df = pd.read_excel("resultats_rues_mayotte.xlsx")
 
-    # Colonnes nécessaires
-    if "Visite" not in df.columns:
-        df["Visite"] = "À visiter"
+    for col, default in [("Visite", "À visiter"), ("Prioritaire", False), ("Nombre_membres", 1)]:
+        if col not in df.columns:
+            df[col] = default
 
-    if "Prioritaire" not in df.columns:
-        df["Prioritaire"] = False
-
-    if "Nombre_membres" not in df.columns:
-        df["Nombre_membres"] = 1
-
-    # Nettoyage Nom_rue (évite crash tri)
-    df["Nom_rue"] = (
-        df["Nom_rue"]
-        .fillna("Inconnu")
-        .astype(str)
-        .str.strip()
-    )
-
-    # Nettoyage coordonnées
+    df["Nom_rue"] = df["Nom_rue"].fillna("Inconnu").astype(str).str.strip()
     df["lat"] = pd.to_numeric(df["lat"], errors="coerce")
     df["lon"] = pd.to_numeric(df["lon"], errors="coerce")
     df = df.dropna(subset=["lat", "lon"])
-
     return df
 
 df = load_data()
 
 # ----------------------------
-# 2️⃣ MENU FILTRES (mobile friendly)
+# 2️⃣ Menu filtres
 # ----------------------------
 quartiers = ["Tous"] + sorted(df["Nom_rue"].unique(), key=str.lower)
 quartier_select = st.selectbox("🏘️ Quartier", quartiers)
@@ -66,20 +99,17 @@ prioritaire_only = st.checkbox("Afficher uniquement prioritaires")
 # 3️⃣ Filtrer DataFrame
 # ----------------------------
 df_plot = df.copy()
-
 if quartier_select != "Tous":
     df_plot = df_plot[df_plot["Nom_rue"] == quartier_select]
 
 df_plot = df_plot[df_plot["Visite"].isin(etat_select)]
-
 if prioritaire_only:
     df_plot = df_plot[df_plot["Prioritaire"]]
 
 # ----------------------------
 # 4️⃣ Statistiques terrain
 # ----------------------------
-col1, col2, col3 = st.columns(3)
-
+col1, col2, col3 = st.columns([1,1,1])
 total = len(df_plot)
 visites = (df_plot["Visite"] == "Visité").sum()
 reste = (df_plot["Visite"] == "À visiter").sum()
@@ -92,26 +122,14 @@ col3.metric("Restantes", reste)
 # 5️⃣ Créer carte
 # ----------------------------
 if not df_plot.empty:
+    lat_mean, lon_mean = df_plot["lat"].mean(), df_plot["lon"].mean()
 
-    lat_mean = df_plot["lat"].mean()
-    lon_mean = df_plot["lon"].mean()
-
-    m = folium.Map(
-        location=[lat_mean, lon_mean],
-        zoom_start=15,
-        control_scale=True
-    )
-
+    m = folium.Map(location=[lat_mean, lon_mean], zoom_start=15, control_scale=True)
     cluster = MarkerCluster().add_to(m)
 
-    colors = {
-        "À visiter": "red",
-        "Visité": "green",
-        "En cours": "orange"
-    }
+    colors = {"À visiter": "red", "Visité": "green", "En cours": "orange"}
 
     for idx, row in df_plot.iterrows():
-
         popup_html = f"""
         <b>{row['Nom']} {row['Prénoms']}</b><br>
         Adresse : {row['Adresse']}<br>
@@ -119,7 +137,6 @@ if not df_plot.empty:
         État : {row['Visite']}<br>
         Membres : {row['Nombre_membres']}<br>
         """
-
         folium.CircleMarker(
             location=[row["lat"], row["lon"]],
             radius=7,
@@ -130,8 +147,6 @@ if not df_plot.empty:
             popup=folium.Popup(popup_html, max_width=300)
         ).add_to(cluster)
 
-    # Affichage carte (mobile compatible)
-    st_folium(m, width=None, height=600)
-
+    st_folium(m, width="100%", height=600)
 else:
     st.warning("Aucune donnée à afficher avec ces filtres.")
